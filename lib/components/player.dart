@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flame/collisions.dart';
 import 'package:flame/components.dart';
+import 'package:flame_audio/flame_audio.dart';
 import 'package:flutter/services.dart';
 import 'package:pixel_adventure/components/Checkpoint.dart';
 import 'package:pixel_adventure/components/collision_block.dart';
@@ -36,7 +37,7 @@ class Player extends SpriteAnimationGroupComponent
   final double stepTime = 0.05;
 
   final double _gravity = 10;
-  final double _jumpForce = 460;
+  final double _jumpForce = 260;
   final double _terminalVelocity = 300;
 
   double horizontalMovement = 0;
@@ -51,9 +52,11 @@ class Player extends SpriteAnimationGroupComponent
   CustomHitbox hitbox =
       CustomHitbox(offsetX: 10, offsetY: 4, width: 14, height: 28);
 
+  double fixedDeltaTime = 1 / 60;
+  double accumulateTime = 0;
+
   @override
   FutureOr<void> onLoad() {
-    priority = 1;
     _loadAllAnimation();
     // debugMode = true;
 
@@ -67,12 +70,17 @@ class Player extends SpriteAnimationGroupComponent
 
   @override
   void update(double dt) {
-    if (!gotHit && !reachedCheckpoint) {
-      _updatePlayerState();
-      _updatePlayerMovement(dt);
-      _checkHorizontalCollisions();
-      _applyGravity(dt);
-      _checkVerticalCollisions();
+    accumulateTime += dt;
+
+    while (accumulateTime >= fixedDeltaTime) {
+      if (!gotHit && !reachedCheckpoint) {
+        _updatePlayerState();
+        _updatePlayerMovement(fixedDeltaTime);
+        _checkHorizontalCollisions();
+        _applyGravity(fixedDeltaTime);
+        _checkVerticalCollisions();
+      }
+      accumulateTime -= fixedDeltaTime;
     }
 
     super.update(dt);
@@ -95,14 +103,14 @@ class Player extends SpriteAnimationGroupComponent
   }
 
   @override
-  void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
+  void onCollisionStart(
+      Set<Vector2> intersectionPoints, PositionComponent other) {
     if (!reachedCheckpoint) {
       if (other is Fruit) other.collidedWithPlayer();
       if (other is Saw) _respawn();
       if (other is Checkpoint && !reachedCheckpoint) _reachedCheckpoint();
     }
-
-    super.onCollision(intersectionPoints, other);
+    super.onCollisionStart(intersectionPoints, other);
   }
 
   void _loadAllAnimation() {
@@ -110,7 +118,7 @@ class Player extends SpriteAnimationGroupComponent
     runningAnimation = _spriteAnimation('Run', 12);
     jumpingAnimation = _spriteAnimation('Jump', 1);
     fallingAnimation = _spriteAnimation('Fall', 1);
-    hitAnimation = _spriteAnimation('Hit', 7);
+    hitAnimation = _spriteAnimation('Hit', 7)..loop = false;
     appearingAnimation = _specialSpriteAnimation('Appearing', 7);
     disappearingAnimation = _specialSpriteAnimation('Desappearing', 7);
 
@@ -140,7 +148,10 @@ class Player extends SpriteAnimationGroupComponent
     return SpriteAnimation.fromFrameData(
         game.images.fromCache('Main Characters/$state (96x96).png'),
         SpriteAnimationData.sequenced(
-            amount: amount, stepTime: stepTime, textureSize: Vector2.all(96)));
+            amount: amount,
+            stepTime: stepTime,
+            textureSize: Vector2.all(96),
+            loop: false));
   }
 
   void _updatePlayerState() {
@@ -174,6 +185,9 @@ class Player extends SpriteAnimationGroupComponent
   }
 
   void _playerJump(double dt) {
+    if (game.playSounds) {
+      FlameAudio.play('jump.wav', volume: game.soundVolume);
+    }
     velocity.y = -_jumpForce;
     position.y += velocity.y * dt;
     isOnGround = false;
@@ -233,28 +247,36 @@ class Player extends SpriteAnimationGroupComponent
     }
   }
 
-  void _respawn() {
-    const hitDuration = Duration(milliseconds: 350);
-    const appearingDuration = Duration(milliseconds: 350);
+  void _respawn() async {
+    if (game.playSounds) {
+      FlameAudio.play('hit.wav', volume: game.soundVolume);
+    }
     const canMoveDuration = Duration(milliseconds: 400);
     gotHit = true;
     current = PlayerState.hit;
-    Future.delayed(hitDuration, () {
-      scale.x = 1;
-      position = startingPosition - Vector2.all(32);
-      current = PlayerState.appearing;
-      Future.delayed(appearingDuration, () {
-        velocity = Vector2.zero();
-        position = startingPosition;
-        _updatePlayerState();
-        Future.delayed(canMoveDuration, () => gotHit = false);
-      });
-    });
-    // position = startingPosition;
+
+    await animationTicker?.completed;
+    animationTicker?.reset();
+
+    scale.x = 1;
+    position = startingPosition - Vector2.all(32);
+    current = PlayerState.appearing;
+
+    await animationTicker?.completed;
+    animationTicker?.reset();
+
+    velocity = Vector2.zero();
+    position = startingPosition;
+    _updatePlayerState();
+    Future.delayed(canMoveDuration, () => gotHit = false);
   }
 
-  void _reachedCheckpoint() {
+  void _reachedCheckpoint() async {
     reachedCheckpoint = true;
+
+    if (game.playSounds) {
+      FlameAudio.play('disappear.wav', volume: game.soundVolume);
+    }
 
     if (scale.x > 0) {
       position = position - Vector2.all(32);
@@ -264,16 +286,14 @@ class Player extends SpriteAnimationGroupComponent
 
     current = PlayerState.disappearing;
 
-    const reachedCheckpointDuration = Duration(milliseconds: 350);
+    await animationTicker?.completed;
+    animationTicker?.reset();
 
-    Future.delayed(reachedCheckpointDuration, () {
-      reachedCheckpoint = false;
-      position = Vector2.all(-640);
+    reachedCheckpoint = false;
 
-      const waitToChangeDuration = Duration(seconds: 3);
-      Future.delayed(waitToChangeDuration, () {
-        game.loadNextLevel();
-      });
-    });
+    position = Vector2.all(-640);
+
+    const waitToChangeDuration = Duration(seconds: 3);
+    Future.delayed(waitToChangeDuration, () => game.loadNextLevel());
   }
 }
